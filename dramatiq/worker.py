@@ -234,9 +234,6 @@ class _ConsumerThread(Thread):
 
         except ConnectionError as e:
             self.logger.critical("Consumer encountered a connection error: %s", e)
-            # Acking is unsafe when the connection is abruptly closed
-            # so we must clear the queue.  All brokers have at-least
-            # once semantics so this is a safe operation.
             self.delay_queue = PriorityQueue()
 
         except Exception as e:
