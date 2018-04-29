@@ -15,11 +15,10 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import errno
 import logging
-import socket
 import time
 import warnings
+from functools import partial
 from itertools import chain
 from threading import local
 
@@ -369,7 +368,7 @@ def URLRabbitmqBroker(url, *, middleware=None):
         broker.
     """
     warnings.warn(
-        "URLRabbitmqBroker in favour of the url parameter to RabbitmqBroker.",
+        "Use RabbitmqBroker with the 'url' parameter instead of URLRabbitmqBroker.",
         DeprecationWarning, stacklevel=2,
     )
     return RabbitmqBroker(url=url, middleware=middleware)
@@ -378,18 +377,6 @@ def URLRabbitmqBroker(url, *, middleware=None):
 class _IgnoreScaryLogs(logging.Filter):
     def filter(self, record):
         return "Broken pipe" not in record.getMessage()
-
-
-class _InterruptEvent:
-    def dispatch(self):
-        pass
-
-
-class _InterruptMessage:
-    def __init__(self):
-        self.method = type(self)
-        self.properties = None
-        self.body = None
 
 
 class _RabbitmqConsumer(Consumer):
@@ -406,29 +393,15 @@ class _RabbitmqConsumer(Consumer):
             # we don't attempt to send invalid tags to Rabbit since
             # pika doesn't handle this very well.
             self.known_tags = set()
-
-            # We need to hook into Pika's ioloop so that we can
-            # interrupt the consumer when new ack requests come in.
-            # This is piggy, but the alternative of busy-looping is
-            # worse.  I wish pika exposed "add_handler" on the
-            # connection.
-            self.interrupt_event = _InterruptEvent()
-            self.interrupt_message = _InterruptMessage()
-            self.interrupt_sock_r, self.interrupt_sock_w = socket.socketpair()
-            self.interrupt_sock_r.setblocking(0)
-            self.interrupt_sock_w.setblocking(0)
-            self.connection._impl.ioloop.add_handler(
-                self.interrupt_sock_r.fileno(),
-                self._send_interrupt,
-                0x0001,  # READ
-            )
         except pika.exceptions.ConnectionClosed as e:
             raise ConnectionClosed(e) from None
 
     def ack(self, message):
         try:
             self.known_tags.remove(message._tag)
-            self.channel.basic_ack(message._tag)
+            self.connection.add_callback_threadsafe(
+                partial(self.channel.basic_ack, message._tag),
+            )
         except pika.exceptions.ChannelClosed as e:
             raise ConnectionClosed(e) from None
         except KeyError:
@@ -439,7 +412,9 @@ class _RabbitmqConsumer(Consumer):
     def nack(self, message):
         try:
             self.known_tags.remove(message._tag)
-            self.channel.basic_nack(message._tag, requeue=False)
+            self.connection.add_callback_threadsafe(
+                partial(self.channel.basic_nack, message._tag, requeue=False),
+            )
         except pika.exceptions.ChannelClosed as e:
             raise ConnectionClosed(e) from None
         except KeyError:
@@ -454,12 +429,8 @@ class _RabbitmqConsumer(Consumer):
 
     def __next__(self):
         try:
-            frame = next(self.iterator)
-            if frame is None:
-                return None
-
-            method, properties, body = frame
-            if method is _InterruptMessage:
+            method, properties, body = next(self.iterator)
+            if method is None:
                 return None
 
             message = Message.decode(body)
@@ -470,46 +441,8 @@ class _RabbitmqConsumer(Consumer):
                 pika.exceptions.ConnectionClosed) as e:
             raise ConnectionClosed(e) from None
 
-    def interrupt(self):
-        self.interrupt_sock_w.send(b"X")
-
-    def _send_interrupt(self, fd, events, error=None, write_only=False):
-        try:
-            # Send a ready event to break Pika's is_done() loop in BlockingConnection._flush_output()
-            self.connection._ready_events.append(self.interrupt_event)
-            # Send a pending event to make the consumer generator yield in BlockingChannel.consume()
-            self.channel._queue_consumer_generator.pending_events.append(self.interrupt_message)
-            # Finally, drain the socket for select
-            self.interrupt_sock_r.recv(512)
-        except OSError as e:  # pragma: no cover
-            if e.errno != errno.EAGAIN:
-                raise
-
     def close(self):
         try:
-            try:
-                self.connection._impl.ioloop.remove_handler(self.interrupt_sock_r.fileno())
-                self.interrupt_sock_w.close()
-                self.interrupt_sock_r.close()
-            except KeyError:
-                pass
-
-            if self.channel.is_open:
-                # Remove all the interrupt events from the pending
-                # events queue before calling cancel so pika doesn't
-                # try to reject them.
-                pending_events = []
-                pending_events_queue = self.channel._queue_consumer_generator.pending_events
-                while pending_events_queue:
-                    event = pending_events_queue.popleft()
-                    if not isinstance(event, _InterruptMessage):
-                        pending_events.append(event)
-
-                for event in pending_events:
-                    pending_events_queue.append(event)
-
-                self.channel.cancel()
-
             self.channel.close()
             self.connection.close()
         except (AssertionError,  # sometimes raised by pika

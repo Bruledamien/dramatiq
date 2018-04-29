@@ -287,12 +287,12 @@ class Consumer:
 
     def requeue(self, messages):  # pragma: no cover
         """Move unacked messages back to their queues.  This is called
-        by consumer threads when they fail or are shut down.
+        by consumer threads when they fail or are shut down.  The
+        default implementation does nothing.
 
         Parameters:
           messages(list[MessageProxy]): The messages to requeue.
         """
-        raise NotImplementedError
 
     def __next__(self):  # pragma: no cover
         """Retrieve the next message off of the queue.  This method
@@ -304,10 +304,6 @@ class Consumer:
           processed.
         """
         raise NotImplementedError
-
-    def interrupt(self):
-        """Wake up the consumer if it is idling.
-        """
 
     def close(self):
         """Close this consumer and perform any necessary cleanup actions.
