@@ -143,9 +143,7 @@ class RabbitmqBroker(Broker):
         for channel_or_conn in chain(self.channels, self.connections):
             try:
                 channel_or_conn.close()
-
-            except (pika.exceptions.ChannelClosed,
-                    pika.exceptions.ConnectionClosed):
+            except pika.exceptions.AMQPError:
                 pass
 
             except Exception:  # pragma: no cover
@@ -189,8 +187,8 @@ class RabbitmqBroker(Broker):
                 self.emit_after("declare_delay_queue", delayed_name)
 
                 self._declare_xq_queue(queue_name)
-        except (pika.exceptions.ChannelClosed,
-                pika.exceptions.ConnectionClosed) as e:  # pragma: no cover
+        except (pika.exceptions.AMQPConnectionError,
+                pika.exceptions.AMQPChannelError) as e:  # pragma: no cover
             # Delete the channel and the connection so that the next
             # caller may initiate new ones of each.
             del self.channel
@@ -254,9 +252,8 @@ class RabbitmqBroker(Broker):
                 self.emit_after("enqueue", message, delay)
                 return message
 
-            except (pika.exceptions.ChannelClosed,
-                    pika.exceptions.ConnectionClosed) as e:
-
+            except (pika.exceptions.AMQPConnectionError,
+                    pika.exceptions.AMQPChannelError) as e:
                 # Delete the channel and the connection so that the
                 # next caller/attempt may initiate new ones of each.
                 del self.channel
@@ -384,7 +381,8 @@ class _RabbitmqConsumer(Consumer):
             # we don't attempt to send invalid tags to Rabbit since
             # pika doesn't handle this very well.
             self.known_tags = set()
-        except pika.exceptions.ConnectionClosed as e:
+        except (pika.exceptions.AMQPConnectionError,
+                pika.exceptions.AMQPChannelError) as e:
             raise ConnectionClosed(e) from None
 
     def ack(self, message):
@@ -393,7 +391,8 @@ class _RabbitmqConsumer(Consumer):
             self.connection.add_callback_threadsafe(
                 partial(self.channel.basic_ack, message._tag),
             )
-        except pika.exceptions.ChannelClosed as e:
+        except (pika.exceptions.AMQPConnectionError,
+                pika.exceptions.AMQPChannelError) as e:
             raise ConnectionClosed(e) from None
         except KeyError:
             self.logger.warning("Failed to ack message: not in known tags.")
@@ -406,7 +405,8 @@ class _RabbitmqConsumer(Consumer):
             self.connection.add_callback_threadsafe(
                 partial(self.channel.basic_nack, message._tag, requeue=False),
             )
-        except pika.exceptions.ChannelClosed as e:
+        except (pika.exceptions.AMQPConnectionError,
+                pika.exceptions.AMQPChannelError) as e:
             raise ConnectionClosed(e) from None
         except KeyError:
             self.logger.warning("Failed to nack message: not in known tags.")
@@ -427,18 +427,18 @@ class _RabbitmqConsumer(Consumer):
             message = Message.decode(body)
             self.known_tags.add(method.delivery_tag)
             return _RabbitmqMessage(method.delivery_tag, message)
-        except (AssertionError,  # sometimes raised by pika
-                pika.exceptions.ChannelClosed,
-                pika.exceptions.ConnectionClosed) as e:
+        except (AssertionError,
+                pika.exceptions.AMQPConnectionError,
+                pika.exceptions.AMQPChannelError) as e:
             raise ConnectionClosed(e) from None
 
     def close(self):
         try:
             self.channel.close()
             self.connection.close()
-        except (AssertionError,  # sometimes raised by pika
-                pika.exceptions.ChannelClosed,
-                pika.exceptions.ConnectionClosed) as e:
+        except (AssertionError,
+                pika.exceptions.AMQPConnectionError,
+                pika.exceptions.AMQPChannelError) as e:
             raise ConnectionClosed(e) from None
 
 
