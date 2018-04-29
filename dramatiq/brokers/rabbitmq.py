@@ -31,14 +31,11 @@ from ..logging import get_logger
 from ..message import Message
 
 #: The maximum amount of time a message can be in the dead queue.
-DEAD_MESSAGE_TTL = 86400 * 7 * 1000
+DEAD_MESSAGE_TTL = 86400000 * 7
 
 #: The max number of times to attempt an enqueue operation in case of
 #: a connection error.
-MAX_ENQUEUE_ATTEMPTS = 2
-
-#: The max amount of time messages can be delayed by in ms.
-MAX_MESSAGE_DELAY = 86400000 * 7
+MAX_ENQUEUE_ATTEMPTS = 6
 
 
 class RabbitmqBroker(Broker):
@@ -234,12 +231,6 @@ class RabbitmqBroker(Broker):
         queue_name = message.queue_name
         properties = pika.BasicProperties(delivery_mode=2)
         if delay is not None:
-            if delay > MAX_MESSAGE_DELAY:
-                raise ValueError(
-                    "Messages cannot be delayed for longer than 7 days. "
-                    "Your message queue is not a Database."
-                )
-
             queue_name = dq_name(queue_name)
             message_eta = current_millis() + delay
             message = message.copy(
